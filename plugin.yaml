@@ -1,5 +1,5 @@
 name: tab-tint
-version: "1.0.0"
+version: "0.2.0"
 description: Per-tab colour themes for Hermes Desktop — each tab gets its own tab chassis, divider lines, chat surface and composer tint, independent of the app theme. Includes rounded tab tops and a gap between tabs.
 author: Claudio Ferreira Filho
 license: MIT

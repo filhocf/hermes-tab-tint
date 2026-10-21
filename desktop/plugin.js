@@ -30,18 +30,32 @@ const STORE_KEY = 'themes.v3'
 const STYLE_ID = `${ID}-style`
 const BTN_ATTR = 'data-tab-tint-btn'
 
-/** Cada preset é um trio explícito — o que se vê é o que se aplica. */
+/** Cada preset é um quarteto explícito — o que se vê é o que se aplica.
+    `fg` existe porque texto claro em fundo escuro (e vice-versa) precisa andar
+    junto com a cor: sem ele, aplicar um fundo claro sob o tema claro do app
+    deixa o texto invisível. Pares claro/escuro por cor; todos medidos em
+    contraste WCAG (fg/fundo >= 15, fg/caixa >= 10, fg/aba >= 4.6). */
 const PRESETS = [
-  { name: 'verde', tab: '#2E7D52', line: '#7EE787', bg: '#0E1C14' },
-  { name: 'âmbar', tab: '#8A6512', line: '#E3B341', bg: '#1D1608' },
-  { name: 'azul', tab: '#1F4E8A', line: '#6CB6FF', bg: '#0B1526' },
-  { name: 'roxo', tab: '#5B2C8A', line: '#C297FF', bg: '#170D26' },
-  { name: 'ciano', tab: '#0E5F6B', line: '#67E8F9', bg: '#06181B' },
-  { name: 'rosa', tab: '#8A2C5B', line: '#F7A8D0', bg: '#230B18' },
-  { name: 'vermelho', tab: '#8A2C2C', line: '#FF9A9A', bg: '#240C0C' },
-  { name: 'laranja', tab: '#8A4A12', line: '#FFB86B', bg: '#23140A' },
-  { name: 'limão', tab: '#5E6B12', line: '#D7E36B', bg: '#171A08' },
-  { name: 'grafite', tab: '#3A4048', line: '#9AA4B2', bg: '#14171B' }
+  { name: 'verde escuro', mode: 'dark', tab: '#2E7D52', line: '#7EE787', bg: '#0E1C14', fg: '#E6FBEF' },
+  { name: 'âmbar escuro', mode: 'dark', tab: '#8A6512', line: '#E3B341', bg: '#1D1608', fg: '#FDF3DC' },
+  { name: 'azul escuro', mode: 'dark', tab: '#1F4E8A', line: '#6CB6FF', bg: '#0B1526', fg: '#E8F2FF' },
+  { name: 'roxo escuro', mode: 'dark', tab: '#5B2C8A', line: '#C297FF', bg: '#170D26', fg: '#F3E9FF' },
+  { name: 'ciano escuro', mode: 'dark', tab: '#0E5F6B', line: '#67E8F9', bg: '#06181B', fg: '#E2FBFF' },
+  { name: 'rosa escuro', mode: 'dark', tab: '#8A2C5B', line: '#F7A8D0', bg: '#230B18', fg: '#FFE6F2' },
+  { name: 'vermelho escuro', mode: 'dark', tab: '#8A2C2C', line: '#FF9A9A', bg: '#240C0C', fg: '#FFE8E8' },
+  { name: 'laranja escuro', mode: 'dark', tab: '#8A4A12', line: '#FFB86B', bg: '#23140A', fg: '#FFEEDD' },
+  { name: 'limão escuro', mode: 'dark', tab: '#5E6B12', line: '#D7E36B', bg: '#171A08', fg: '#F4F9DC' },
+  { name: 'grafite escuro', mode: 'dark', tab: '#3A4048', line: '#9AA4B2', bg: '#14171B', fg: '#E9EDF2' },
+  { name: 'verde claro', mode: 'light', tab: '#8FD3AB', line: '#1F7A4D', bg: '#F2F9F4', fg: '#0E2417' },
+  { name: 'âmbar claro', mode: 'light', tab: '#F0D08A', line: '#8A5A00', bg: '#FDF8EC', fg: '#2A1D02' },
+  { name: 'azul claro', mode: 'light', tab: '#A9CBEE', line: '#1D4F8A', bg: '#F1F6FC', fg: '#0C1B2A' },
+  { name: 'roxo claro', mode: 'light', tab: '#CBB0E8', line: '#5B2C8A', bg: '#F7F2FC', fg: '#1E1030' },
+  { name: 'ciano claro', mode: 'light', tab: '#9BDDE6', line: '#0B5A64', bg: '#F0FAFB', fg: '#062024' },
+  { name: 'rosa claro', mode: 'light', tab: '#F4B6D2', line: '#8A2C5B', bg: '#FDF1F6', fg: '#2A0F1D' },
+  { name: 'vermelho claro', mode: 'light', tab: '#F0B0B0', line: '#8A2C2C', bg: '#FDF2F2', fg: '#2A0D0D' },
+  { name: 'laranja claro', mode: 'light', tab: '#F3C08A', line: '#8A4A12', bg: '#FEF6EE', fg: '#2A1808' },
+  { name: 'limão claro', mode: 'light', tab: '#D8DF9B', line: '#5E6B12', bg: '#FAFBEF', fg: '#1D2206' },
+  { name: 'grafite claro', mode: 'light', tab: '#C9D1DA', line: '#3A4048', bg: '#F4F6F8', fg: '#1A1E23' }
 ]
 
 const PALETTE_SVG =
@@ -63,13 +77,26 @@ function hex(value) {
   return typeof value === 'string' && /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(value.trim()) ? value.trim() : null
 }
 
+/** Luminância relativa — só para decidir se o fundo pede texto claro ou escuro. */
+function luminance(color) {
+  const h = color.replace('#', '')
+  const full = h.length === 3 ? h.split('').map(c => c + c).join('') : h
+  const ch = [0, 2, 4].map(i => parseInt(full.slice(i, i + 2), 16) / 255)
+  const lin = ch.map(c => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4))
+  return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+}
+
+/** Tema salvo antes da 0.2 não tem `fg`: deriva do fundo em vez de descartar o
+    tema do usuário (descartar apagaria a cor que ele já escolheu). */
 function themeOf(key) {
   const t = themes[key]
   if (!t) return null
   const tab = hex(t.tab)
   const line = hex(t.line)
   const bg = hex(t.bg)
-  return tab && line && bg ? { tab, line, bg } : null
+  if (!tab || !line || !bg) return null
+  const fg = hex(t.fg) || (luminance(bg) > 0.42 ? '#1A1E23' : '#E9EDF2')
+  return { tab, line, bg, fg }
 }
 
 /** Tom da caixa de texto: nem o fundo puro, nem a aba. */
@@ -122,10 +149,19 @@ function rules() {
 ${surfSel} {
   --ui-chat-surface-background: ${t.bg};
   --dt-card: ${surface(t)};
+  --foreground: ${t.fg};
+  --dt-foreground: ${t.fg};
+  --dt-card-foreground: ${t.fg};
+  --ui-text-primary: ${t.fg};
+  --ui-text-secondary: color-mix(in srgb, ${t.fg} 78%, ${t.bg});
+  --dt-muted-foreground: color-mix(in srgb, ${t.fg} 68%, ${t.bg});
+  --ui-text-tertiary: color-mix(in srgb, ${t.fg} 56%, ${t.bg});
+  --ui-text-quaternary: color-mix(in srgb, ${t.fg} 40%, ${t.bg});
 }
 ${surfSel} [data-slot="composer-surface"] {
   background: ${surface(t)} !important;
   border-color: color-mix(in srgb, ${t.line} 50%, var(--ui-stroke-secondary)) !important;
+  color: ${t.fg};
 }
 ${surfSel} [data-slot="composer-root"] {
   --composer-fill: ${surface(t)};
@@ -133,6 +169,9 @@ ${surfSel} [data-slot="composer-root"] {
 ${hostSel} {
   --ui-chat-surface-background: ${t.bg};
   --dt-card: ${surface(t)};
+  --foreground: ${t.fg};
+  --dt-foreground: ${t.fg};
+  --ui-text-primary: ${t.fg};
   box-shadow: inset 0 0 0 1px color-mix(in srgb, ${t.line} 30%, transparent);
 }
 ${tabSel} {
@@ -141,7 +180,7 @@ ${tabSel} {
   --pane-tab-active-bg: ${t.tab};
   --pane-tab-active-accent: ${t.line};
   border-color: color-mix(in srgb, ${t.line} 45%, transparent) !important;
-  color: color-mix(in srgb, ${t.line} 20%, var(--ui-text-primary));
+  color: ${t.fg};
 }
 ${tabSel}[data-active] {
   box-shadow: inset 0 -2px 0 ${t.line};
@@ -190,23 +229,35 @@ function swatch(t) {
   el.title = t.name || 'tema'
   el.setAttribute('aria-label', t.name || 'tema')
   el.style.cssText =
-    'display:grid;grid-template-rows:9fr 1fr 5fr;width:26px;height:26px;border-radius:6px;overflow:hidden;' +
+    'position:relative;width:26px;height:26px;border-radius:6px;overflow:hidden;' +
     `border:1px solid color-mix(in srgb, ${t.line} 45%, transparent);background:${t.bg};cursor:pointer;padding:0`
   el.innerHTML =
-    `<span style="background:${t.tab}"></span>` +
-    `<span style="background:${t.line}"></span>` +
-    `<span style="background:${t.bg}"></span>`
+    `<span style="position:absolute;inset:0 0 auto 0;height:8px;background:${t.tab}"></span>` +
+    `<span style="position:absolute;inset:8px 0 auto 0;height:2px;background:${t.line}"></span>` +
+    `<span style="position:absolute;left:4px;right:4px;bottom:6px;height:2px;background:${t.fg}"></span>`
+  return el
+}
+
+function sectionLabel(text, mode, isActiveMode) {
+  const el = document.createElement('div')
+  el.textContent = isActiveMode ? `${text} · atual` : text
+  el.style.cssText =
+    `margin:2px 0 4px;font-size:10px;letter-spacing:.04em;text-transform:uppercase;` +
+    `color:var(${isActiveMode ? '--ui-text-secondary' : '--ui-text-quaternary'})`
+  el.setAttribute('data-mode', mode)
   return el
 }
 
 function openPicker(anchor, key, ctx) {
   closePicker()
-  const current = themeOf(key) || { tab: '#2E7D52', line: '#7EE787', bg: '#0E1C14' }
+  const isDarkApp = document.documentElement.classList.contains('dark')
+  const fallback = PRESETS.find(p => p.mode === (isDarkApp ? 'dark' : 'light') && p.name.startsWith('verde'))
+  const current = themeOf(key) || fallback
 
   const box = document.createElement('div')
   box.setAttribute('data-tab-tint-picker', '')
   box.style.cssText =
-    'position:fixed;z-index:60;width:216px;padding:8px;border-radius:8px;' +
+    'position:fixed;z-index:60;width:226px;max-height:min(78vh,560px);overflow-y:auto;padding:8px;border-radius:8px;' +
     'border:1px solid var(--ui-stroke-secondary);background:var(--ui-bg-elevated);' +
     'box-shadow:0 8px 24px rgba(0,0,0,.45);font-size:11px;color:var(--ui-text-secondary)'
 
@@ -214,30 +265,43 @@ function openPicker(anchor, key, ctx) {
   title.textContent = 'Tema desta aba'
   title.style.cssText = 'font-weight:600;margin-bottom:6px;color:var(--ui-text-primary)'
 
-  const grid = document.createElement('div')
-  grid.style.cssText = 'display:grid;grid-template-columns:repeat(5,1fr);gap:5px;margin-bottom:8px'
-
   const write = next => {
     themes = { ...themes, [key]: next }
     save(ctx)
     paint(true)
   }
 
-  for (const preset of PRESETS) {
-    const sw = swatch(preset)
-    sw.addEventListener('click', () => {
-      write({ tab: preset.tab, line: preset.line, bg: preset.bg })
-      host.notify({ kind: 'info', message: `Tema ${preset.name} nesta aba.` })
-    })
-    grid.appendChild(sw)
+  const gridFor = mode => {
+    const grid = document.createElement('div')
+    grid.style.cssText = 'display:grid;grid-template-columns:repeat(5,1fr);gap:5px;margin-bottom:8px'
+    for (const preset of PRESETS.filter(p => p.mode === mode)) {
+      const sw = swatch(preset)
+      sw.addEventListener('click', () => {
+        write({ tab: preset.tab, line: preset.line, bg: preset.bg, fg: preset.fg })
+        host.notify({ kind: 'info', message: `Tema ${preset.name} nesta aba.` })
+      })
+      grid.appendChild(sw)
+    }
+    return grid
   }
+
+  // O modo do app vem primeiro, mas os dois ficam disponíveis: aplicar um tema
+  // claro sobre app escuro (e vice-versa) é escolha legítima — o `fg` do preset
+  // mantém o texto legível nos dois casos.
+  const modes = isDarkApp ? ['dark', 'light'] : ['light', 'dark']
+  const labels = { dark: 'Escuro', light: 'Claro' }
+  const sections = modes.flatMap(mode => [
+    sectionLabel(labels[mode], mode, mode === (isDarkApp ? 'dark' : 'light')),
+    gridFor(mode)
+  ])
 
   const row = document.createElement('div')
   row.style.cssText = 'display:grid;gap:4px'
   const fields = [
     ['aba', 'tab'],
     ['linha', 'line'],
-    ['fundo', 'bg']
+    ['fundo', 'bg'],
+    ['texto', 'fg']
   ]
   for (const [label, field] of fields) {
     const line = document.createElement('label')
@@ -271,7 +335,7 @@ function openPicker(anchor, key, ctx) {
     closePicker()
   })
 
-  box.append(title, grid, row, clear)
+  box.append(title, ...sections, row, clear)
   document.body.appendChild(box)
 
   const r = anchor.getBoundingClientRect()
