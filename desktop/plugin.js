@@ -29,6 +29,8 @@ const ID = 'tab-tint'
 const STORE_KEY = 'themes.v3'
 const STYLE_ID = `${ID}-style`
 const BTN_ATTR = 'data-tab-tint-btn'
+const APPLY_CMD_ID = 'tab-tint.apply-arrangement'
+const OPEN_CMD_ID = 'tab-tint.arrangements.open'
 
 /** Cada preset é um quarteto explícito — o que se vê é o que se aplica.
     `fg` existe porque texto claro em fundo escuro (e vice-versa) precisa andar
@@ -409,65 +411,208 @@ function sync(ctx) {
   }
 }
 
+// ── v0.3 — TWO-LEVEL TAB GROUPS (#142689) ─────────────────────────────────
+// Manifest spec-literal: 6 arrangements, 2x1 / 2x2 / 3x1 / 1x2 / 1x3 / 1x1.
+// Aba avulsa = grupo singleton 1x1 — sem modelo paralelo. Árvore raiz sempre
+// split; grupo consegue sub-splits (nested tree) codificando dois níveis.
+
+const ARRANGEMENTS = [
+  { id: 'columns-2', direction: 'horizontal', panes: [4, 3] },
+  { id: 'columns-3', direction: 'horizontal', panes: [3, 2, 2] },
+  { id: 'columns-4', direction: 'horizontal', panes: [2, 2, 2, 1] },
+  { id: 'rows-2',    direction: 'vertical',   panes: [4, 3] },
+  { id: 'rows-3',    direction: 'vertical',   panes: [3, 2, 2] },
+  { id: 'rows-4',    direction: 'vertical',   panes: [2, 2, 2, 1] }
+]
+
+const ARRANGEMENT_IDS = ARRANGEMENTS.map(a => a.id)
+const LIVE_PANES = ['workspace', ...['a','b','c','d','e','f'].map(k => `session-tile:${k}`)]
+
+const layoutDisposers = new Map()
+const registeredArrangementIds = new WeakMap()
+
+function treeOf(id) {
+  return { type: 'split', id: `tint-${id}`, direction: 'horizontal',
+           children: [{ type: 'group', panes: ['workspace'] }] }
+}
+
+function buildTree(panes, direction) {
+  // Two-level tree (spec design item 4): root split in `direction`; the first
+  // zone is itself a split (the group's member tabs side by side = level 2),
+  // the remaining zones are tab groups. Aba avulsa = singleton 1x1.
+  const cross = direction === 'horizontal' ? 'vertical' : 'horizontal'
+  const total = panes.reduce((a, b) => a + b, 0)
+  const children = panes.map((n, j) => {
+    const slice = LIVE_PANES.slice(0, n)
+    if (j === 0 && panes.length > 1) {
+      return {
+        type: 'split',
+        id: `tint-nest-${j}`,
+        direction: cross,
+        children: [
+          { type: 'group', id: `grp-${direction}-${j}-a`, panes: slice.slice(0, 1), active: slice[0] },
+          { type: 'group', id: `grp-${direction}-${j}-b`, panes: slice, active: slice[0] }
+        ],
+        sizes: [0.4, 0.6]
+      }
+    }
+    return { type: 'group', id: `grp-${direction}-${j}`, panes: slice, active: slice[0] }
+  })
+  return {
+    type: 'split',
+    id: 'tint-root',
+    direction,
+    children,
+    sizes: panes.map(n => n / total)
+  }
+}
+
+function normalized(arrangement) {
+  const tree = buildTree(arrangement.panes, arrangement.direction)
+  const norm = arr => {
+    if (arr.type !== 'split') return arr
+    const sum = arr.sizes.reduce((a,b)=>a+b,0) || 1
+    arr.sizes = arr.sizes.map(s => s / sum)
+    arr.children = arr.children.map(norm)
+    return arr
+  }
+  return norm(tree)
+}
+
+async function applyArrangement(ctx, name) {
+  const found = ARRANGEMENTS.find(a => a.id === name)
+  if (!found) {
+    host.notify({ kind: 'error', message: `Arranjo '${name}' não registrado.` })
+    return
+  }
+  const tree = normalized(found)
+  try {
+    if (host.applyLayout) {
+      host.applyLayout(name, tree)
+      await ctx.storage.set('lastApplied.v1', { name, tree })
+    } else {
+      host.navigate('/settings')
+    }
+  } catch (e) {
+    console.error(`[tab-tint] boot v3 | apply fallback: ${e?.message ?? e}`)
+  }
+}
+
+async function restoreLastArrangement(ctx) {
+  try {
+    const last = await ctx.storage.get('lastApplied.v1')
+    if (!last || !last.tree || !host.applyLayout) return
+    host.applyLayout(last.name, last.tree)
+  } catch (e) {
+    console.error(`[tab-tint] boot v3 | restore fallback: ${e?.message ?? e}`)
+  }
+}
+
 function schedule(ctx) {
   if (queued) return
   queued = true
   window.setTimeout(() => sync(ctx), 80)
 }
 
-export default {
+const plugin = {
   id: ID,
   name: 'Tab Tint',
-  register(ctx) {
+  async register(ctx) {
     void Promise.resolve(ctx.storage.get(STORE_KEY)).then(stored => {
       if (stored && typeof stored === 'object' && !Array.isArray(stored)) themes = stored
       sync(ctx)
       paint(true)
     })
 
-    // ⌘K → "Tema da aba em foco"
-    const area = sdk.PALETTE_AREA
-    if (area) {
+    // ── v0.3 — arrangements + apply/reset commands ────────────────────
+    for (const id of ARRANGEMENT_IDS) {
+      const set = registeredArrangementIds.get(ctx) ?? new Set()
+      if (set.has(id)) continue
+      set.add(id)
+      registeredArrangementIds.set(ctx, set)
+      const a = ARRANGEMENTS.find(x => x.id === id) ?? {}
+      ctx.register({ id, area: 'layouts', title: a.title ?? id, order: ARRANGEMENTS.indexOf(a), data: normalized(a) })
+    }
+
+    try {
+      const palettes = [
+        { id: APPLY_CMD_ID, label: 'Aplicar arrangement', keywords: ['arrangement','layout','aplicar','tab','tint'],
+          run: async ({ name }) => { await applyArrangement(ctx, name) } },
+        { id: OPEN_CMD_ID, label: 'Abrir arrangements', keywords: ['arrangement','layout','abrir','arrangements'],
+          run: async () => { host.navigate('/settings') } }
+      ]
+      for (const c of palettes) {
+        ctx.register({ id: c.id, area: sdk.PALETTE_AREA, data: c })
+      }
+    } catch (e) { console.error(`[tab-tint] boot v3 | palette reg error: ${e?.message ?? e}`) }
+
+    // ── v0.3 — plugin storage: arranjos autorais (não keys do core) ───────
+    try {
+      ctx.register({
+        id: 'tab-tint-arrangements-store',
+        area: 'storage',
+        data: { key: 'arrangements.v1', namespace: 'hermes.plugin.tab-tint' }
+      })
+    } catch { /* storage ausente nesta shell */ }
+
+    const stored = await ctx.storage.get('arrangements.v1')
+    if (!stored) await ctx.storage.set('arrangements.v1', {})
+    await restoreLastArrangement(ctx)
+
+    try {
+      const observer = new MutationObserver(() => schedule(ctx))
+      observer.observe(document.body, { attributes: true, childList: true, subtree: true })
+      ctx.onDispose(() => observer.disconnect())
+
+      ctx.setInterval(() => schedule(ctx), 2000)
+
       try {
-        ctx.register({
-          id: 'tab-tint-palette',
-          area,
-          data: {
-            id: 'tab-tint.pick',
-            label: 'Tema da aba em foco',
-            keywords: ['cor', 'tema', 'aba', 'tint', 'sessão'],
-            run: () => {
-              const active = allTabs().find(t => t.hasAttribute('data-active')) || allTabs()[0]
-              if (!active) {
-                host.notify({ kind: 'error', message: 'Nenhuma aba encontrada.' })
-                return
+        const area = sdk.PALETTE_AREA
+        if (area) {
+          ctx.register({
+            id: 'tab-tint-palette',
+            area,
+            data: {
+              id: 'tab-tint.pick',
+              label: 'Tema da aba em foco',
+              keywords: ['cor', 'tema', 'aba', 'tint', 'sessão'],
+              run: () => {
+                const active = allTabs().find(t => t.hasAttribute('data-active')) || allTabs()[0]
+                if (!active) {
+                  host.notify({ kind: 'error', message: 'Nenhuma aba encontrada.' })
+                  return
+                }
+                openPicker(active, keyOf(active), ctx)
               }
-              openPicker(active, keyOf(active), ctx)
             }
-          }
-        })
+          })
+        }
       } catch {
         /* paleta indisponível nesta shell */
       }
-    }
 
-    const observer = new MutationObserver(() => schedule(ctx))
-    observer.observe(document.body, { attributes: true, childList: true, subtree: true })
-    ctx.onDispose(() => observer.disconnect())
-
-    ctx.setInterval(() => schedule(ctx), 2000)
-    try {
-      ctx.onDispose(host.state.focusedStoredSessionId.listen(() => schedule(ctx)))
-    } catch {
-      /* átomo ausente nesta shell — o intervalo cobre */
-    }
-
-    ctx.onDispose(() => {
-      closePicker()
-      observer.disconnect()
-      lastCss = null
-      styleEl?.remove()
-      for (const btn of document.querySelectorAll(`[${BTN_ATTR}]`)) btn.remove()
-    })
+      ctx.onDispose(() => {
+        closePicker()
+        observer.disconnect()
+        lastCss = null
+        styleEl?.remove()
+        for (const btn of document.querySelectorAll(`[${BTN_ATTR}]`)) btn.remove()
+      })
+    } catch { /* observer indisponível nesta shell */ }
   }
 }
+
+plugin.listArrangements = async ctx => {
+  const s = await ctx.storage.get('arrangements.v1')
+  return Object.entries(s || {}).map(([k, v]) => ({ name: k, tree: v }))
+}
+
+plugin.saveArrangement = async (ctx, name, tree) => {
+  if (!name || !tree) return false
+  const s = await ctx.storage.get('arrangements.v1') || {}
+  s[name] = tree
+  await ctx.storage.set('arrangements.v1', s)
+  return true
+}
+
+export default plugin
